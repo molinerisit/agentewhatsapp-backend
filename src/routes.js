@@ -198,7 +198,8 @@ router.post('/instance', async (req, res) => {
       alwaysOnline,
       readMessages,
       readStatus,
-      syncFullHistory
+      syncFullHistory: true   // <— cambia esto a true
+
     };
 
     if (backendBase) {
@@ -233,13 +234,40 @@ router.post('/instance', async (req, res) => {
 router.post('/chat/find', async (req, res) => {
   try {
     const { instance } = req.body;
-    const data = await findChats(instance);
-    res.json(data);
+    const raw = await findChats(instance);
+
+    const toArray = (x) => {
+      if (Array.isArray(x)) return x;
+      if (Array.isArray(x?.chats)) return x.chats;
+      if (Array.isArray(x?.data)) return x.data;
+      if (Array.isArray(x?.items)) return x.items;
+      if (x && typeof x === 'object') {
+        // a veces viene { chats: {} } o { data: {} } → no sirve
+        return [];
+      }
+      return [];
+    };
+
+    let arr = toArray(raw);
+
+    // Fallback opcional: algunos builds exponen otra firma
+    if (!arr.length) {
+      try {
+        const alt = await evo.post(`/chat/findChats/${encodeURIComponent(instance)}`, {});
+        arr = toArray(alt?.data ?? alt);
+      } catch (e) {
+        // noop: si falla, seguimos con []
+      }
+    }
+
+    res.json({ ok: true, chats: arr });
   } catch (e) {
     console.error('[chat/find ERROR]', e?.response?.status, e?.response?.data || e.message);
-    res.status(500).json({ error: e?.response?.data || e.message });
+    // devolvé array vacío para que el front no muera y puedas ver el estado
+    res.status(200).json({ ok: false, chats: [] });
   }
 });
+
 
 router.post('/messages/find', async (req, res) => {
   try {
