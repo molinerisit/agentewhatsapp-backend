@@ -37,17 +37,21 @@ const ALLOWED_HEADERS = (process.env.ALLOWED_HEADERS || 'Content-Type, Authoriza
   .split(',').map(s => s.trim());
 
 const corsOptions = {
-  origin(origin, callback) {
-    // Permitir herramientas sin Origin (curl, health checks)
-    if (!origin) return callback(null, true);
-    if (ANY) return callback(null, true);
-    if (ORIGINS.includes(origin)) return callback(null, true);
-    return callback(new Error(`CORS blocked: ${origin}`));
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);
+    if (ANY) return cb(null, true);
+    if (ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked: ${origin}`));
   },
   credentials: CREDENTIALS,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ALLOWED_HEADERS
+  // 👇 QUITAR ESTA LÍNEA PARA QUE cors REFLEJE LO QUE PIDA EL NAVEGADOR
+  // allowedHeaders: ALLOWED_HEADERS 
 };
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
 
 // Aplicar CORS y responder preflight
 app.use(cors(corsOptions));
