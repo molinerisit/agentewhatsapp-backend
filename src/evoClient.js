@@ -16,48 +16,52 @@ export const evo = axios.create({
   timeout: 15000
 });
 
-export async function fetchInstances({ instanceName, instanceId } = {}) {
+// === Instancias ===
+export async function fetchInstances({ instanceName } = {}) {
   if (instanceName) {
     const { data } = await evo.get(`/instance/${encodeURIComponent(instanceName)}`);
     return [data];
   }
-  const { data } = await evo.get('/instance/list');
+  const { data } = await evo.get('/instance/all');
   return data;
 }
 
-
-export async function connectionState(instance) {
-  const { data } = await evo.get(`/instance/connectionState/${encodeURIComponent(instance)}`);
+// === Estado de conexión ===
+export async function connectionState(instanceName) {
+  const { data } = await evo.get(`/instance/connectionState`, {
+    params: { instanceName }
+  });
   return data;
 }
 
-export async function connect(instance) {
-  // Devuelve pairingCode + code (QR) + count (según setup Evolution)
-  const { data } = await evo.get(`/instance/connect/${encodeURIComponent(instance)}`);
+// === Conectar (QR/pairing) ===
+export async function connect(instanceName) {
+  const { data } = await evo.get(`/instance/connect/${encodeURIComponent(instanceName)}`);
   return data;
 }
 
-export async function sendText(instance, { number, text, quoted }) {
-  const payload = { number, text };
+// === Mensajes ===
+export async function sendText(instanceName, { number, text, quoted }) {
+  const payload = { instanceName, number, text };
   if (quoted) payload.quoted = quoted;
-  const { data } = await evo.post(`/message/sendText/${encodeURIComponent(instance)}`, payload);
+  const { data } = await evo.post(`/message/sendText`, payload);
   return data;
 }
 
-export async function findChats(instance) {
-  const { data } = await evo.post(`/chat/findChats/${encodeURIComponent(instance)}`);
+export async function findChats(instanceName) {
+  const { data } = await evo.post(`/chat/findChats`, { instanceName });
   return data;
 }
 
-export async function findMessages(instance, { remoteJid, limit = 50 } = {}) {
+export async function findMessages(instanceName, { remoteJid, limit = 50 } = {}) {
   const where = remoteJid ? { key: { remoteJid } } : undefined;
-  const { data } = await evo.post(`/chat/findMessages/${encodeURIComponent(instance)}`, { where, limit });
+  const { data } = await evo.post(`/chat/findMessages`, { instanceName, where, limit });
   return data;
 }
 
-export async function markAsRead(instance, readMessages) {
-  // v2 usa POST y propiedad readMessages
-  const { data } = await evo.post(`/chat/markMessageAsRead/${encodeURIComponent(instance)}`, {
+export async function markAsRead(instanceName, readMessages) {
+  const { data } = await evo.post(`/chat/markMessageAsRead`, {
+    instanceName,
     readMessages
   });
   return data;
