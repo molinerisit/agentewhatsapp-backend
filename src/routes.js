@@ -52,6 +52,57 @@ router.post('/chat/find', async (req, res) => {
   }
 });
 
+// === NUEVO: crear instancia en Evolution ===
+router.post('/instance', async (req, res) => {
+  try {
+    const {
+      instanceName,
+      integration = 'WHATSAPP-BAILEYS',
+      qrcode = true,
+      alwaysOnline = true,
+      readMessages = true,
+      readStatus = true,
+      syncFullHistory = false
+    } = req.body || {};
+
+    if (!instanceName) {
+      return res.status(400).json({ error: 'instanceName requerido' });
+    }
+
+    // Webhook absoluto opcional: si definís BACKEND_PUBLIC_URL, lo usamos
+    const webhookUrl =
+      process.env.BACKEND_PUBLIC_URL
+        ? `${process.env.BACKEND_PUBLIC_URL.replace(/\/$/, '')}/api/wa/webhook?token=${encodeURIComponent(process.env.WEBHOOK_TOKEN || 'evolution')}&instance={{instance}}`
+        : undefined;
+
+    const payload = {
+      instanceName,
+      integration,
+      qrcode,
+      alwaysOnline,
+      readMessages,
+      readStatus,
+      syncFullHistory,
+      ...(webhookUrl
+        ? { webhook: { url: webhookUrl, byEvents: true, base64: true } }
+        : {})
+    };
+
+    // Llamamos al Evolution para crear la instancia
+    const created = await evo.post('/instance/create', payload).then(r => r.data);
+
+    // Opcional: forzar connect para que ya venga code/pairing
+    let connectData = null;
+    try {
+      connectData = await connect(instanceName);
+    } catch (_) {}
+
+    res.json({ ok: true, created, connect: connectData });
+  } catch (e) {
+    res.status(500).json({ error: e?.response?.data || e.message });
+  }
+});
+
 router.post('/messages/find', async (req, res) => {
   try {
     const { instance, remoteJid, limit } = req.body;
