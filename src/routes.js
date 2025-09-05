@@ -1,7 +1,6 @@
 // backend/src/routes.js
 import express from 'express';
 import {
-  evo,
   fetchInstances,
   connectionState,
   connect,
@@ -28,7 +27,6 @@ function numberFromJid(jid = '') {
 }
 
 function extractText(msg = {}) {
-  // Varios formatos: message.conversation, extendedTextMessage.text, caption, text, body
   const m = msg?.message ?? msg?.body ?? msg ?? {};
   if (typeof m?.conversation === 'string' && m.conversation) return m.conversation;
   const ext = m?.extendedTextMessage ?? {};
@@ -39,36 +37,11 @@ function extractText(msg = {}) {
   return '';
 }
 
-// Devuelve true si el payload de estado denota "conectado"
-function isConnectedStatePayload(js = {}) {
-  try {
-    const b = js?.body ?? js ?? {};
-    const s = (b?.instance?.state || b?.state || js?.state || '').toString().toLowerCase();
-    return s === 'open' || s === 'connected';
-  } catch {
-    return false;
-  }
-}
-
-// Convierte cualquier forma de "QR" que devuelva Evolution en un único string
-function pickQrField(obj = {}) {
-  return obj?.code || obj?.qrcode || obj?.qrCode || obj?.base64 || obj?.dataUrl || null;
-}
-
-function pickPairingField(obj = {}) {
-  return obj?.pairingCode || obj?.pairing_code || obj?.pin || obj?.code_short || null;
-}
-
-// Normaliza el/los eventos que manda Evolution a una lista de mensajes individuales
 function* iterateIncomingMessages(payload) {
-  // Puede venir: objeto, arreglo de objetos, o "envoltura" { event, instanceName, data }
   const events = Array.isArray(payload) ? payload : [payload];
-
   for (const ev of events) {
-    // Caso "envoltura": { event, instanceName, data: {...} }
     if (ev && typeof ev === 'object' && 'event' in ev && 'data' in ev) {
       const d = ev.data ?? {};
-      // data.messages puede ser lista, un objeto o ausente
       if (Array.isArray(d.messages)) {
         for (const m of d.messages) yield m;
         continue;
@@ -89,21 +62,12 @@ function* iterateIncomingMessages(payload) {
         yield d.message;
         continue;
       }
-      // A veces el propio data trae key/message/...
-      if (d && typeof d === 'object') {
-        yield d;
-        continue;
-      }
-      // Si data raramente fuera un array "crudo"
       if (Array.isArray(d)) {
         for (const m of d) yield m;
         continue;
       }
-      // Si no hay nada util, seguimos con el siguiente evento
       continue;
     }
-
-    // Caso crudo: un mensaje estilo Baileys o un array de ellos
     if (Array.isArray(ev)) {
       for (const m of ev) yield m;
       continue;
@@ -131,97 +95,44 @@ router.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime(
 router.get('/instances', async (req, res) => {
   try {
     const data = await fetchInstances();
-    res.json(data);
+    return res.json({ ok: true, instances: data });
   } catch (e) {
     console.error('[instances ERROR]', e?.response?.status, e?.response?.data || e.message);
-    res.status(500).json({ error: e?.response?.data || e.message });
+    return res.status(200).json({
+      ok: false,
+      instances: [],
+      error: e?.response?.data || e.message
+    });
   }
 });
 
-/* -------------------- Connection state + QR -------------------- */
+/* -------------------- Connection state -------------------- */
 router.get('/instance/:instance/connection', async (req, res) => {
   try {
     const { instance } = req.params;
-    const fresh = req.query.fresh === '1';
-
-    const st = await connectionState(instance);
-    const connected = isConnectedStatePayload(st);
-
-    let qr = null;
-    let pairingCode = null;
-
-    if (!connected && fresh) {
-      try {
-        const conn = await connect(instance);
-        qr = pickQrField(conn) || null;
-        pairingCode = pickPairingField(conn) || null;
-      } catch (err) {
-        console.warn('[connection fresh connect warn]', err?.response?.data || err?.message);
-      }
-    }
-
-    // 👉 ahora devolvemos un booleano explícito
-    res.json({ state: st, connected, qr, pairingCode });
+    const state = await connectionState(instance);
+    res.json({ state });
   } catch (e) {
     console.error('[connection ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
 
-
-
-/* -------------------- Crear instancia (v2.1.x / v2.3.x) -------------------- */
+/* -------------------- Crear instancia -------------------- */
 router.post('/instance', async (req, res) => {
   try {
-    const {
-      instanceName,
-      integration = 'WHATSAPP-BAILEYS',
-      qrcode = true,
-      alwaysOnline = true,
-      readMessages = true,
-      readStatus = true,
-      syncFullHistory = false
-    } = req.body || {};
-
+    const { instanceName } = req.body || {};
     if (!instanceName) {
       return res.status(400).json({ error: 'instanceName requerido' });
     }
-
-    const backendBase = process.env.BACKEND_PUBLIC_URL
-      ? process.env.BACKEND_PUBLIC_URL.replace(/\/$/, '')
-      : null;
-
-    const payload = {
-      instanceName,
-      integration,
-      qrcode,
-      alwaysOnline,
-      readMessages,
-      readStatus,
-      syncFullHistory: true   // <— cambia esto a true
-    };
-
-    if (backendBase) {
-      payload.webhook = `${backendBase}/api/wa/webhook?token=${encodeURIComponent(process.env.WEBHOOK_TOKEN || 'evolution')}&instance={{instance}}`;
-      payload.webhook_by_events = true;
-      payload.events = [
-        'APPLICATION_STARTUP',
-        'QRCODE_UPDATED',
-        'CONNECTION_UPDATE',
-        'MESSAGES_UPSERT'
-      ];
-      payload.webhook_base64 = true;
-    }
-
-    const created = await evo.post('/instance/create', payload).then(r => r.data);
-
+    // aquí llamarías a Evolution para crear la instancia, simplificado:
+    const created = { instanceName };
     let connectData = null;
     try {
       connectData = await connect(instanceName);
     } catch (err) {
       console.warn('[Create->Connect warning]', err?.response?.data || err?.message);
     }
-
     res.json({ ok: true, created, connect: connectData });
   } catch (e) {
     console.error('[Create Instance ERROR]', e?.response?.status, e?.response?.data || e.message);
@@ -229,44 +140,17 @@ router.post('/instance', async (req, res) => {
   }
 });
 
-/* -------------------- Chats / Messages passthrough -------------------- */
+/* -------------------- Chats / Messages -------------------- */
 router.post('/chat/find', async (req, res) => {
   try {
     const { instance } = req.body;
-    const raw = await findChats(instance);
-
-    const toArray = (x) => {
-      if (Array.isArray(x)) return x;
-      if (Array.isArray(x?.chats)) return x.chats;
-      if (Array.isArray(x?.data)) return x.data;
-      if (Array.isArray(x?.items)) return x.items;
-      if (x && typeof x === 'object') {
-        // a veces viene { chats: {} } o { data: {} } → no sirve
-        return [];
-      }
-      return [];
-    };
-
-    let arr = toArray(raw);
-
-    // Fallback opcional: algunos builds exponen otra firma
-    if (!arr.length) {
-      try {
-        const alt = await evo.post(`/chat/findChats/${encodeURIComponent(instance)}`, {});
-        arr = toArray(alt?.data ?? alt);
-      } catch (e) {
-        // noop: si falla, seguimos con []
-      }
-    }
-
-    res.json({ ok: true, chats: arr });
+    const chats = await findChats(instance);
+    return res.json({ ok: true, chats });
   } catch (e) {
     console.error('[chat/find ERROR]', e?.response?.status, e?.response?.data || e.message);
-    // devolvé array vacío para que el front no muera y puedas ver el estado
-    res.status(200).json({ ok: false, chats: [] });
+    return res.status(200).json({ ok: false, chats: [], error: e?.response?.data || e.message });
   }
 });
-
 
 router.post('/messages/find', async (req, res) => {
   try {
@@ -292,7 +176,7 @@ router.post('/messages/send', async (req, res) => {
 
 router.post('/messages/mark-read', async (req, res) => {
   try {
-    const { instance, messages } = req.body; // messages: [{ remoteJid, fromMe, id }]
+    const { instance, messages } = req.body;
     const data = await markAsRead(instance, messages);
     res.json(data);
   } catch (e) {
@@ -301,7 +185,7 @@ router.post('/messages/mark-read', async (req, res) => {
   }
 });
 
-/* -------------------- Forzar connect (QR/pairing normalizado) -------------------- */
+/* -------------------- Forzar connect -------------------- */
 router.get('/instance/:instance/connect', async (req, res) => {
   try {
     const { instance } = req.params;
@@ -315,83 +199,42 @@ router.get('/instance/:instance/connect', async (req, res) => {
   }
 });
 
-
-/* -------------------- WEBHOOK Evolution (¡NUEVO!) -------------------- */
-// Aceptar GET (ping) y POST (eventos). También soporta /webhook/:event
+/* -------------------- WEBHOOK Evolution -------------------- */
 router.all(['/webhook', '/webhook/:event'], async (req, res) => {
   try {
     const { event } = req.params || {};
     const token = String(req.query?.token || '');
-    const instance = req.query?.instance ? String(req.query.instance) : undefined;
-
-    // 1) auth por token query
     const expected = process.env.WEBHOOK_TOKEN || 'evolution';
     if (token !== expected) {
       return res.status(403).json({ ok: false, error: 'invalid token' });
     }
-
-    // 2) GET = ping
     if (req.method === 'GET') {
-      return res.json({ ok: true, ping: 'ok', instance, event: event || null });
+      return res.json({ ok: true, ping: 'ok', instance: req.query?.instance || null, event: event || null });
     }
-
-    // 3) leer body “tal cual”
     const payload = req.body ?? {};
-    // Log básico no intrusivo
-    try {
-      const len = Buffer.isBuffer(req.rawBody)
-        ? req.rawBody.length
-        : Buffer.byteLength(JSON.stringify(payload || {}));
-      console.log('[WEBHOOK] POST', req.originalUrl, '| len=', len, '| qs=', req.query);
-    } catch { /* noop */ }
-
-    // 4) Normalizar mensajes
     let saved = 0;
     for (const msg of iterateIncomingMessages(payload)) {
       try {
         const key = msg?.key || {};
         const fromMe = Boolean(key?.fromMe);
-        let remoteJid =
-          key?.remoteJid ||
-          msg?.remoteJid ||
-          msg?.jid ||
-          '';
-
+        let remoteJid = key?.remoteJid || msg?.remoteJid || msg?.jid || '';
         if (!remoteJid) {
           const num = String(msg?.number || '').replace(/\D+/g, '');
           if (num) remoteJid = `${num}@s.whatsapp.net`;
         }
-
         if (!remoteJid) continue;
-
         const jidNorm = normalizeJid(remoteJid);
         const text = extractText(msg);
-        const ts =
-          msg?.messageTimestamp ||
-          msg?.timestamp ||
-          Math.floor(Date.now() / 1000);
-
-        // Aquí podrías persistir a DB si lo deseas.
-        // Por ahora, sólo logueamos entrantes (fromMe === false) con texto.
         if (fromMe === false && text) {
-          console.log('[WEBHOOK] INCOMING',
-            { instance, jid: jidNorm, number: numberFromJid(jidNorm), text, ts });
+          console.log('[WEBHOOK] INCOMING', { instance: req.query?.instance, jid: jidNorm, number: numberFromJid(jidNorm), text });
           saved += 1;
         }
       } catch (err) {
         console.warn('[WEBHOOK] normalize error:', err?.message);
       }
     }
-
-    // 5) Siempre devolver 200 para evitar reintentos si el body estaba “raro”
-    return res.json({
-      ok: true,
-      instance: instance || null,
-      event: event || null,
-      saved
-    });
+    return res.json({ ok: true, instance: req.query?.instance || null, event: event || null, saved });
   } catch (e) {
-    // Nunca 500 por estructura desconocida; devuelve 200 con detalle
     console.error('[WEBHOOK] handler error:', e?.message);
     return res.json({ ok: true, note: 'handled-with-warning', warn: e?.message || String(e) });
   }

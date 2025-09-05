@@ -1,4 +1,3 @@
-// backend/src/evoClient.js
 import axios from 'axios';
 
 const baseURL = process.env.EVOLUTION_API_URL;
@@ -14,13 +13,13 @@ export const evo = axios.create({
     'Content-Type': 'application/json',
     'apikey': apiKey
   },
-  // Aumentamos timeout: Evolution a veces demora en responder (histórico, etc.)
-  timeout: 45000
+  timeout: 45000 // ⏱ timeout más alto para evitar cortes
 });
 
-// Helper de normalización a array (por si Evolution cambia el shape)
+// helper de normalización a array
 function toArray(x) {
   if (Array.isArray(x)) return x;
+  if (Array.isArray(x?.instances)) return x.instances;
   if (Array.isArray(x?.chats)) return x.chats;
   if (Array.isArray(x?.data)) return x.data;
   if (Array.isArray(x?.items)) return x.items;
@@ -34,7 +33,7 @@ export async function fetchInstances({ instanceName, instanceId } = {}) {
       instanceId: instanceId || undefined
     }
   });
-  return res.data;
+  return toArray(res.data);
 }
 
 export async function connectionState(instance) {
@@ -43,7 +42,6 @@ export async function connectionState(instance) {
 }
 
 export async function connect(instance) {
-  // Devuelve pairingCode + code (QR) + count (según setup Evolution)
   const { data } = await evo.get(`/instance/connect/${encodeURIComponent(instance)}`);
   return data;
 }
@@ -56,15 +54,14 @@ export async function sendText(instance, { number, text, quoted }) {
 }
 
 export async function findChats(instance) {
-  // Algunas versiones 2.1.x esperan GET; si falla o viene vacío, probamos POST.
   try {
     const { data } = await evo.get(`/chat/findChats/${encodeURIComponent(instance)}`);
     return toArray(data);
-  } catch (err) {
+  } catch {
     try {
       const { data } = await evo.post(`/chat/findChats/${encodeURIComponent(instance)}`, {});
       return toArray(data);
-    } catch (err2) {
+    } catch {
       return [];
     }
   }
@@ -77,7 +74,6 @@ export async function findMessages(instance, { remoteJid, limit = 50 } = {}) {
 }
 
 export async function markAsRead(instance, readMessages) {
-  // v2 usa POST y propiedad readMessages
   const { data } = await evo.post(`/chat/markMessageAsRead/${encodeURIComponent(instance)}`, {
     readMessages
   });
