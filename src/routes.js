@@ -1,5 +1,14 @@
 import express from 'express';
-import { fetchInstances, connectionState, connect, sendText, findChats, findMessages, markAsRead } from './evoClient.js';
+import {
+  evo,
+  fetchInstances,
+  connectionState,
+  connect,
+  sendText,
+  findChats,
+  findMessages,
+  markAsRead
+} from './evoClient.js';
 
 const router = express.Router();
 
@@ -7,7 +16,9 @@ const router = express.Router();
 router.use((req, res, next) => {
   const key = req.header('x-backend-key');
   if (!process.env.BACKEND_API_KEY) return next();
-  if (key !== process.env.BACKEND_API_KEY) return res.status(401).json({ error: 'Unauthorized' });
+  if (key !== process.env.BACKEND_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   next();
 });
 
@@ -18,6 +29,7 @@ router.get('/instances', async (req, res) => {
     const data = await fetchInstances();
     res.json(data);
   } catch (e) {
+    console.error('[instances ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
@@ -33,26 +45,19 @@ router.get('/instance/:instance/connection', async (req, res) => {
       try {
         const conn = await connect(instance);
         qr = conn?.code || null; // base64 string para generar QR (si Evolution lo devuelve)
-      } catch (_) {}
+      } catch (err) {
+        console.warn('[connection->connect warning]', err?.response?.data || err?.message);
+      }
     }
 
     res.json({ state, qr });
   } catch (e) {
+    console.error('[connection ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
 
-router.post('/chat/find', async (req, res) => {
-  try {
-    const { instance } = req.body;
-    const data = await findChats(instance);
-    res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e?.response?.data || e.message });
-  }
-});
-
-// === NUEVO: crear instancia en Evolution ===
+// === NUEVO: crear instancia en Evolution (compatible v2.1.x y v2.3.x) ===
 router.post('/instance', async (req, res) => {
   try {
     const {
@@ -69,12 +74,12 @@ router.post('/instance', async (req, res) => {
       return res.status(400).json({ error: 'instanceName requerido' });
     }
 
-    // Webhook absoluto opcional: si definís BACKEND_PUBLIC_URL, lo usamos
-    const webhookUrl =
-      process.env.BACKEND_PUBLIC_URL
-        ? `${process.env.BACKEND_PUBLIC_URL.replace(/\/$/, '')}/api/wa/webhook?token=${encodeURIComponent(process.env.WEBHOOK_TOKEN || 'evolution')}&instance={{instance}}`
-        : undefined;
+    // Si definís BACKEND_PUBLIC_URL, seteamos el webhook automáticamente
+    const backendBase = process.env.BACKEND_PUBLIC_URL
+      ? process.env.BACKEND_PUBLIC_URL.replace(/\/$/, '')
+      : null;
 
+    // Payload "plano" compatible con Evolution v2.1.x
     const payload = {
       instanceName,
       integration,
@@ -82,23 +87,42 @@ router.post('/instance', async (req, res) => {
       alwaysOnline,
       readMessages,
       readStatus,
-      syncFullHistory,
-      ...(webhookUrl
-        ? { webhook: { url: webhookUrl, byEvents: true, base64: true } }
-        : {})
+      syncFullHistory
     };
 
-    // Llamamos al Evolution para crear la instancia
+    if (backendBase) {
+      payload.webhook = `${backendBase}/api/wa/webhook?token=${encodeURIComponent(process.env.WEBHOOK_TOKEN || 'evolution')}&instance={{instance}}`;
+      payload.webhook_by_events = true;
+      payload.events = ['APPLICATION_STARTUP', 'QRCODE_UPDATED', 'CONNECTION_UPDATE', 'MESSAGES_UPSERT'];
+      // En algunas builds podrías necesitar base64 en el webhook:
+      // payload.webhook_base64 = true;
+    }
+
+    // Llamamos a Evolution para crear
     const created = await evo.post('/instance/create', payload).then(r => r.data);
 
-    // Opcional: forzar connect para que ya venga code/pairing
+    // Forzar connect para intentar traer QR/pairing al toque
     let connectData = null;
     try {
       connectData = await connect(instanceName);
-    } catch (_) {}
+    } catch (err) {
+      console.warn('[Create->Connect warning]', err?.response?.data || err?.message);
+    }
 
     res.json({ ok: true, created, connect: connectData });
   } catch (e) {
+    console.error('[Create Instance ERROR]', e?.response?.status, e?.response?.data || e.message);
+    res.status(500).json({ error: e?.response?.data || e.message });
+  }
+});
+
+router.post('/chat/find', async (req, res) => {
+  try {
+    const { instance } = req.body;
+    const data = await findChats(instance);
+    res.json(data);
+  } catch (e) {
+    console.error('[chat/find ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
@@ -109,6 +133,7 @@ router.post('/messages/find', async (req, res) => {
     const data = await findMessages(instance, { remoteJid, limit });
     res.json(data);
   } catch (e) {
+    console.error('[messages/find ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
@@ -119,6 +144,7 @@ router.post('/messages/send', async (req, res) => {
     const data = await sendText(instance, { number, text, quoted });
     res.json(data);
   } catch (e) {
+    console.error('[messages/send ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
@@ -129,6 +155,7 @@ router.post('/messages/mark-read', async (req, res) => {
     const data = await markAsRead(instance, messages);
     res.json(data);
   } catch (e) {
+    console.error('[messages/mark-read ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
@@ -137,13 +164,13 @@ router.post('/messages/mark-read', async (req, res) => {
 router.get('/instance/:instance/connect', async (req, res) => {
   try {
     const { instance } = req.params;
-    const conn = await connect(instance);                 // intenta crear/actualizar sesión
+    const conn = await connect(instance); // intenta crear/actualizar sesión
     // conn suele traer: { pairingCode, code (QR base64), count, ... }
     res.json({ ok: true, ...conn });
   } catch (e) {
+    console.error('[instance/connect ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
-
 
 export default router;
