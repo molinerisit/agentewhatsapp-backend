@@ -1,5 +1,4 @@
 // backend/src/evoClient.js
-
 import axios from 'axios';
 
 const baseURL = process.env.EVOLUTION_API_URL;
@@ -15,8 +14,18 @@ export const evo = axios.create({
     'Content-Type': 'application/json',
     'apikey': apiKey
   },
-  timeout: 15000
+  // Aumentamos timeout: Evolution a veces demora en responder (histórico, etc.)
+  timeout: 45000
 });
+
+// Helper de normalización a array (por si Evolution cambia el shape)
+function toArray(x) {
+  if (Array.isArray(x)) return x;
+  if (Array.isArray(x?.chats)) return x.chats;
+  if (Array.isArray(x?.data)) return x.data;
+  if (Array.isArray(x?.items)) return x.items;
+  return [];
+}
 
 export async function fetchInstances({ instanceName, instanceId } = {}) {
   const res = await evo.get('/instance/fetchInstances', {
@@ -47,8 +56,18 @@ export async function sendText(instance, { number, text, quoted }) {
 }
 
 export async function findChats(instance) {
-  const { data } = await evo.post(`/chat/findChats/${encodeURIComponent(instance)}`);
-  return data;
+  // Algunas versiones 2.1.x esperan GET; si falla o viene vacío, probamos POST.
+  try {
+    const { data } = await evo.get(`/chat/findChats/${encodeURIComponent(instance)}`);
+    return toArray(data);
+  } catch (err) {
+    try {
+      const { data } = await evo.post(`/chat/findChats/${encodeURIComponent(instance)}`, {});
+      return toArray(data);
+    } catch (err2) {
+      return [];
+    }
+  }
 }
 
 export async function findMessages(instance, { remoteJid, limit = 50 } = {}) {
