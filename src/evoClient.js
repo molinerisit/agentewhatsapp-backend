@@ -17,14 +17,14 @@ export const evo = axios.create({
 });
 
 export async function fetchInstances({ instanceName, instanceId } = {}) {
-  const res = await evo.get('/instance/fetchInstances', {
-    params: {
-      instanceName: instanceName || undefined,
-      instanceId: instanceId || undefined
-    }
-  });
-  return res.data;
+  if (instanceName) {
+    const { data } = await evo.get(`/instance/${encodeURIComponent(instanceName)}`);
+    return [data];
+  }
+  const { data } = await evo.get('/instance/list');
+  return data;
 }
+
 
 export async function connectionState(instance) {
   const { data } = await evo.get(`/instance/connectionState/${encodeURIComponent(instance)}`);
