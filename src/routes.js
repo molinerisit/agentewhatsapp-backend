@@ -143,26 +143,14 @@ router.get('/instance/:instance/connection', async (req, res) => {
   try {
     const { instance } = req.params;
     const state = await connectionState(instance);
-
-    let qr = null;
-    let pairingCode = null;
-
-    if (!state?.connected && !isConnectedStatePayload(state)) {
-      try {
-        const conn = await connect(instance);
-        qr = pickQrField(conn) || null;
-        pairingCode = pickPairingField(conn) || null;
-      } catch (err) {
-        console.warn('[connection->connect warning]', err?.response?.data || err?.message);
-      }
-    }
-
-    res.json({ state, qr, pairingCode });
+    // 👇 ya no llamamos connect() acá
+    res.json({ state });
   } catch (e) {
     console.error('[connection ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
+
 
 /* -------------------- Crear instancia (v2.1.x / v2.3.x) -------------------- */
 router.post('/instance', async (req, res) => {
@@ -273,14 +261,15 @@ router.get('/instance/:instance/connect', async (req, res) => {
   try {
     const { instance } = req.params;
     const conn = await connect(instance);
-    const code = pickQrField(conn) || null;
-    const pairingCode = pickPairingField(conn) || null;
+    const code = conn?.code || conn?.qrcode || conn?.base64 || null;
+    const pairingCode = conn?.pairingCode || conn?.pairing_code || null;
     res.json({ ok: true, code, pairingCode, raw: conn });
   } catch (e) {
     console.error('[instance/connect ERROR]', e?.response?.status, e?.response?.data || e?.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
+
 
 /* -------------------- WEBHOOK Evolution (¡NUEVO!) -------------------- */
 // Aceptar GET (ping) y POST (eventos). También soporta /webhook/:event
