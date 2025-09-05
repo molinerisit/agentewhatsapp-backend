@@ -82,4 +82,17 @@ router.post('/messages/mark-read', async (req, res) => {
   }
 });
 
+// === NUEVO: forzar connect y devolver QR/pairing ===
+router.get('/instance/:instance/connect', async (req, res) => {
+  try {
+    const { instance } = req.params;
+    const conn = await connect(instance);                 // intenta crear/actualizar sesión
+    // conn suele traer: { pairingCode, code (QR base64), count, ... }
+    res.json({ ok: true, ...conn });
+  } catch (e) {
+    res.status(500).json({ error: e?.response?.data || e.message });
+  }
+});
+
+
 export default router;
