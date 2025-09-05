@@ -199,7 +199,6 @@ router.post('/instance', async (req, res) => {
       readMessages,
       readStatus,
       syncFullHistory: true   // <— cambia esto a true
-
     };
 
     if (backendBase) {
