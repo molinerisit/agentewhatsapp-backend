@@ -11,13 +11,56 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
 
-const ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
-app.use(cors({ origin: ORIGIN, credentials: true }));
+/**
+ * =========================
+ * CORS por variables de entorno
+ * =========================
+ * - CORS_ORIGINS: lista separada por comas (ej: "https://tu-frontend.vercel.app,http://localhost:5173")
+ *                 o "*" para permitir todos los orígenes (solo si NO usás credenciales).
+ * - CORS_CREDENTIALS: "true" | "false"  (si usás "*", esto se fuerza a false)
+ * - ALLOWED_HEADERS: lista separada por comas (default: "Content-Type, Authorization, X-Requested-With")
+ * - FRONTEND_ORIGIN: compat. hacia atrás; si no hay CORS_ORIGINS, toma este valor
+ */
+const envOrigins =
+  process.env.CORS_ORIGINS?.trim() ||
+  process.env.FRONTEND_ORIGIN?.trim() || // compat
+  'http://localhost:5173';
 
-// HTTP server + Socket.IO
+const ORIGINS = envOrigins.split(',').map(s => s.trim()).filter(Boolean);
+const ANY = ORIGINS.includes('*');
+
+const CREDENTIALS_ENV = String(process.env.CORS_CREDENTIALS || 'false').toLowerCase() === 'true';
+// Si se usa "*", no se pueden usar credenciales (norma del navegador)
+const CREDENTIALS = ANY ? false : CREDENTIALS_ENV;
+
+const ALLOWED_HEADERS = (process.env.ALLOWED_HEADERS || 'Content-Type, Authorization, X-Requested-With')
+  .split(',').map(s => s.trim());
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Permitir herramientas sin Origin (curl, health checks)
+    if (!origin) return callback(null, true);
+    if (ANY) return callback(null, true);
+    if (ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked: ${origin}`));
+  },
+  credentials: CREDENTIALS,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ALLOWED_HEADERS
+};
+
+// Aplicar CORS y responder preflight
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // importante para OPTIONS
+
+// HTTP server + Socket.IO (con la misma política CORS)
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
-  cors: { origin: ORIGIN, methods: ['GET','POST'] }
+  cors: {
+    origin: ANY ? '*' : ORIGINS,
+    methods: ['GET', 'POST'],
+    credentials: CREDENTIALS
+  }
 });
 
 io.on('connection', socket => {
@@ -137,4 +180,6 @@ function formatErr(err) {
 const port = process.env.PORT || 4000;
 server.listen(port, () => {
   console.log('Backend listening on port', port);
+  console.log('CORS_ORIGINS:', ORIGINS.join(', '));
+  console.log('CREDENTIALS:', CREDENTIALS);
 });
