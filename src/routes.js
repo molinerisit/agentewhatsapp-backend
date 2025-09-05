@@ -41,10 +41,10 @@ router.get('/instance/:instance/connection', async (req, res) => {
 
     let qr = null;
     if (!state?.connected) {
-      // Intentamos traer un QR (pairing code/QR code)
       try {
         const conn = await connect(instance);
-        qr = conn?.code || null; // base64 string para generar QR (si Evolution lo devuelve)
+        // Normalizamos posibles nombres de campo del QR (v2.1.x / v2.3.x)
+        qr = conn?.code || conn?.qrcode || conn?.base64 || null;
       } catch (err) {
         console.warn('[connection->connect warning]', err?.response?.data || err?.message);
       }
@@ -57,7 +57,7 @@ router.get('/instance/:instance/connection', async (req, res) => {
   }
 });
 
-// === NUEVO: crear instancia en Evolution (compatible v2.1.x y v2.3.x) ===
+// Crear instancia (compatible v2.1.x y v2.3.x)
 router.post('/instance', async (req, res) => {
   try {
     const {
@@ -74,12 +74,11 @@ router.post('/instance', async (req, res) => {
       return res.status(400).json({ error: 'instanceName requerido' });
     }
 
-    // Si definís BACKEND_PUBLIC_URL, seteamos el webhook automáticamente
     const backendBase = process.env.BACKEND_PUBLIC_URL
       ? process.env.BACKEND_PUBLIC_URL.replace(/\/$/, '')
       : null;
 
-    // Payload "plano" compatible con Evolution v2.1.x
+    // Payload "plano" compatible con v2.1.x
     const payload = {
       instanceName,
       integration,
@@ -91,17 +90,18 @@ router.post('/instance', async (req, res) => {
     };
 
     if (backendBase) {
+      // Webhook como string + flags de eventos (v2.1.x friendly)
       payload.webhook = `${backendBase}/api/wa/webhook?token=${encodeURIComponent(process.env.WEBHOOK_TOKEN || 'evolution')}&instance={{instance}}`;
       payload.webhook_by_events = true;
       payload.events = ['APPLICATION_STARTUP', 'QRCODE_UPDATED', 'CONNECTION_UPDATE', 'MESSAGES_UPSERT'];
-      // En algunas builds podrías necesitar base64 en el webhook:
-      // payload.webhook_base64 = true;
+      // Pedimos base64 en webhook para que QRCODE_UPDATED traiga qrcode en base64
+      payload.webhook_base64 = true;
     }
 
-    // Llamamos a Evolution para crear
+    // Crear instancia en Evolution
     const created = await evo.post('/instance/create', payload).then(r => r.data);
 
-    // Forzar connect para intentar traer QR/pairing al toque
+    // Forzar connect para intentar traer QR/parring al toque
     let connectData = null;
     try {
       connectData = await connect(instanceName);
@@ -160,15 +160,16 @@ router.post('/messages/mark-read', async (req, res) => {
   }
 });
 
-// === NUEVO: forzar connect y devolver QR/pairing ===
+// Forzar connect y devolver QR/pairing normalizado
 router.get('/instance/:instance/connect', async (req, res) => {
   try {
     const { instance } = req.params;
-    const conn = await connect(instance); // intenta crear/actualizar sesión
-    // conn suele traer: { pairingCode, code (QR base64), count, ... }
-    res.json({ ok: true, ...conn });
+    const conn = await connect(instance);
+    const code = conn?.code || conn?.qrcode || conn?.base64 || null;
+    const pairingCode = conn?.pairingCode || conn?.pairing_code || null;
+    res.json({ ok: true, code, pairingCode, raw: conn });
   } catch (e) {
-    console.error('[instance/connect ERROR]', e?.response?.status, e?.response?.data || e.message);
+    console.error('[instance/connect ERROR]', e?.response?.status, e?.response?.data || e?.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
