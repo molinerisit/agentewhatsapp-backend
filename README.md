@@ -1,8 +1,30 @@
-# Backend – WhatsApp Evolution Proxy + WebSocket
+# Evolution Bot Backend (Express + Socket.IO)
 
-1) Copia `.env.example` a `.env` y completa tus variables.
-2) En Railway, crea un servicio Node (o usa este Dockerfile).
-3) En Evolution API, pone el `WEBHOOK_URL` apuntando a tu backend:
-   `https://TU-BACKEND.railway.app/api/wa/webhook?token=evolution&instance={{instance}}`
-4) Asegurate que `WEBHOOK_TOKEN` == `token=` del `WEBHOOK_URL`.
-5) Define `CORS_ORIGIN` con tu dominio de Vercel y localhost si querés.
+Servidor que expone endpoints simples y un puente de WebSocket/Socket.IO para
+integrarse con Evolution API. Diseñado para funcionar con el frontend Vite incluido.
+
+## Variables de entorno
+
+Copia `.env.example` a `.env` y completa:
+
+- `EVOLUTION_API_BASE`: URL base de Evolution API.
+- `EVOLUTION_API_KEY`: Bearer token.
+- `PORT`: Puerto del backend (default 4000).
+- `FRONTEND_ORIGIN`: Origen permitido por CORS (default `http://localhost:5173`).
+- `WEBHOOK_SECRET`: Clave simple para validar el webhook (opcional).
+
+## Scripts
+
+```bash
+npm install
+npm run dev
+# o
+npm start
+```
+
+## Webhook
+
+Configura en Evolution API tu webhook apuntando a:
+`POST http://<tu-backend>/webhook/evolution?secret=<WEBHOOK_SECRET>`
+
+Este backend retransmite los eventos entrantes por Socket.IO a los clientes conectados.

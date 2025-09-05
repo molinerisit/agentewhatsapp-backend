@@ -1,72 +1,140 @@
-//backend/src/server.js
-
 import express from 'express';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
-import helmet from 'helmet';
 import morgan from 'morgan';
-import routes from './routes.js';
-import makeWebhookRouter from './webhook.js';
+import dotenv from 'dotenv';
+import api from './services/evolution.js';
+dotenv.config();
 
 const app = express();
-const server = http.createServer(app);
-
-/**
- * CORS ULTRA-COMPTATIBLE (primero de todo)
- * - Devuelve siempre los headers CORS
- * - Maneja OPTIONS (preflight) con 204
- * - Permite header x-backend-key
- * - Varia por Origin para caches
- */
-app.use((req, res, next) => {
-  const origin = req.headers.origin || '*';
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-backend-key');
-  // No usamos credenciales (cookies) así que no seteamos Allow-Credentials
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  return next();
-});
-
-// (Opcional) también dejamos cors() para compatibilidad con libs que lo lean
-app.use(cors({
-  origin: (_origin, cb) => cb(null, true),
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-backend-key'],
-  credentials: false,
-  maxAge: 86400,
-  optionsSuccessStatus: 204
-}));
-
-// Resto de middlewares
-app.use(helmet());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
 
-// Socket.IO con CORS abierto
+const ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+app.use(cors({ origin: ORIGIN, credentials: true }));
+
+// HTTP server + Socket.IO
+const server = http.createServer(app);
 const io = new SocketIOServer(server, {
-  cors: {
-    origin: true, // refleja el Origin
-    methods: ['GET', 'POST']
+  cors: { origin: ORIGIN, methods: ['GET','POST'] }
+});
+
+io.on('connection', socket => {
+  console.log('Socket connected', socket.id);
+  socket.on('disconnect', () => console.log('Socket disconnected', socket.id));
+});
+
+// ---- Helpers para emitir eventos al frontend
+function emit(event, payload) {
+  io.emit(event, payload);
+}
+
+// ---- Rutas REST ligeras que proxyean Evolution API
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+app.get('/instances', async (req, res) => {
+  try {
+    const data = await api.listInstances();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
   }
 });
 
-// Webhook sin auth del frontend
-app.use('/api', makeWebhookRouter(io));
-
-// API con auth simple
-app.use('/api', routes);
-
-// WebSocket
-io.on('connection', socket => {
-  socket.on('join', ({ instance }) => {
-    if (instance) socket.join(String(instance));
-  });
+app.post('/instances', async (req, res) => {
+  try {
+    const { name } = req.body;
+    const data = await api.createInstance(name);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
+  }
 });
 
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
-  console.log(`[Backend] Listening on port ${PORT}`);
+app.delete('/instances/:id', async (req, res) => {
+  try {
+    const data = await api.deleteInstance(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
+  }
+});
+
+app.get('/instances/:id/qr', async (req, res) => {
+  try {
+    const data = await api.getQr(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
+  }
+});
+
+app.get('/instances/:id/state', async (req, res) => {
+  try {
+    const data = await api.getState(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
+  }
+});
+
+app.get('/instances/:id/chats', async (req, res) => {
+  try {
+    const data = await api.listChats(req.params.id);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
+  }
+});
+
+app.get('/instances/:id/messages', async (req, res) => {
+  try {
+    const { jid, cursor } = req.query;
+    const data = await api.listMessages(req.params.id, jid, cursor);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
+  }
+});
+
+app.post('/instances/:id/messages', async (req, res) => {
+  try {
+    const { to, text } = req.body;
+    const data = await api.sendText(req.params.id, to, text);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: formatErr(err) });
+  }
+});
+
+// Webhook para eventos entrantes desde Evolution
+app.post('/webhook/evolution', (req, res) => {
+  const secret = req.query.secret;
+  if (process.env.WEBHOOK_SECRET && secret !== process.env.WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Invalid webhook secret' });
+  }
+  // Reenviar todo al frontend
+  emit('evolution:event', req.body);
+  res.json({ ok: true });
+});
+
+// 404
+app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+
+// Error handler
+function formatErr(err) {
+  if (!err) return 'Unknown error';
+  if (err.response) {
+    return {
+      status: err.response.status,
+      data: err.response.data
+    };
+  }
+  return String(err.message || err);
+}
+
+const port = process.env.PORT || 4000;
+server.listen(port, () => {
+  console.log('Backend listening on port', port);
 });
