@@ -1,4 +1,4 @@
-// routes.js
+// backend/src/routes.js
 import express from 'express';
 import {
   evo,
@@ -142,14 +142,32 @@ router.get('/instances', async (req, res) => {
 router.get('/instance/:instance/connection', async (req, res) => {
   try {
     const { instance } = req.params;
-    const state = await connectionState(instance);
-    // 👇 ya no llamamos connect() acá
-    res.json({ state });
+    const fresh = req.query.fresh === '1';
+
+    const st = await connectionState(instance);
+    const connected = isConnectedStatePayload(st);
+
+    let qr = null;
+    let pairingCode = null;
+
+    if (!connected && fresh) {
+      try {
+        const conn = await connect(instance);
+        qr = pickQrField(conn) || null;
+        pairingCode = pickPairingField(conn) || null;
+      } catch (err) {
+        console.warn('[connection fresh connect warn]', err?.response?.data || err?.message);
+      }
+    }
+
+    // 👉 ahora devolvemos un booleano explícito
+    res.json({ state: st, connected, qr, pairingCode });
   } catch (e) {
     console.error('[connection ERROR]', e?.response?.status, e?.response?.data || e.message);
     res.status(500).json({ error: e?.response?.data || e.message });
   }
 });
+
 
 
 /* -------------------- Crear instancia (v2.1.x / v2.3.x) -------------------- */
