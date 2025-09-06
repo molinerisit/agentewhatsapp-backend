@@ -68,37 +68,32 @@ export default function makeRoutes(memoryStore) {
   });
 
   // MESSAGES (+ fallback a memoria)
-  router.get('/messages', async (req, res) => {
-    try {
-      const { instance, remoteJid, limit } = req.query;
-      if (!instance) return res.status(400).json({ error: 'Missing "instance"' });
-      if (!remoteJid) return res.status(400).json({ error: 'Missing "remoteJid"' });
+router.get('/messages', async (req, res) => {
+  try {
+    const { instance, remoteJid, limit } = req.query;
+    if (!instance) return res.status(400).json({ error: 'Missing "instance"' });
+    if (!remoteJid) return res.status(400).json({ error: 'Missing "remoteJid"' });
 
-      const jid = String(remoteJid);
-      if (!/@/.test(jid)) {
-        return res.status(400).json({ error: 'remoteJid debe terminar en @s.whatsapp.net o @g.us' });
-      }
+    const jid = String(remoteJid);
+    let out = await fetchMessagesCompat(instance, jid, limit ? Number(limit) : 50);
 
-      console.log('[HTTP] GET /api/messages inst=', instance, 'jid=', jid, 'limit=', limit);
-      const msgs = await fetchMessagesCompat(instance, jid, limit ? Number(limit) : 50);
-      let out = Array.isArray(msgs) ? msgs : [];
-
-      if (!out.length) {
-        // fallback a memoria (lo que llegó por webhook)
-        out = memoryStore.list(String(instance), String(jid), limit ? Number(limit) : 50);
-        console.log('[HTTP] /api/messages -> FALLBACK memory count=', out.length);
-      } else {
-        console.log('[HTTP] /api/messages -> evo count=', out.length);
-      }
-
-      return res.json({ messages: out });
-    } catch (e) {
-      const status = e?.response?.status || 500;
-      const payload = e?.response?.data || e.message;
-      console.error('[messages ERROR]', status, payload);
-      res.status(500).json({ error: payload, status });
+    // ⬇⬇ Fallback a lo que capturó el webhook
+    if (!Array.isArray(out) || out.length === 0) {
+      const mem = getStore()?.[instance]?.[jid] || [];
+      out = mem.slice(-50); // últimos 50
+      console.log(`[HTTP] /api/messages (fallback) -> ${out.length}`);
+    } else {
+      console.log(`[HTTP] /api/messages (REST) -> ${out.length}`);
     }
-  });
+
+    res.json({ messages: out });
+  } catch (e) {
+    const status = e?.response?.status || 500;
+    const payload = e?.response?.data || e.message;
+    console.error('[messages ERROR]', status, payload);
+    res.status(500).json({ error: payload, status });
+  }
+});
 
   // SEND TEXT
   router.post('/send', async (req, res) => {
