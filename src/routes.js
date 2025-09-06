@@ -70,13 +70,14 @@ router.get('/messages', async (req, res) => {
     if (!instance) return res.status(400).json({ error: 'Missing "instance"' });
     if (!remoteJid) return res.status(400).json({ error: 'Missing "remoteJid"' });
 
-    // Forzamos que sea JID real (…@s.whatsapp.net/…@g.us)
-    if (!/@/.test(String(remoteJid))) {
-      return res.status(400).json({ error: 'remoteJid debe ser un JID válido (…@s.whatsapp.net / …@g.us)' });
+    // Forzamos JID válido para evitar confusiones (ya vi que venían bien, pero ayuda)
+    const jid = String(remoteJid);
+    if (!/@/.test(jid)) {
+      return res.status(400).json({ error: 'remoteJid debe terminar en @s.whatsapp.net o @g.us' });
     }
 
-    const msgs = await fetchMessagesCompat(instance, String(remoteJid), limit ? Number(limit) : 50);
-    res.json({ messages: Array.isArray(msgs) ? msgs : [] });
+    const msgs = await fetchMessagesCompat(instance, jid, limit ? Number(limit) : 50);
+    return res.json({ messages: Array.isArray(msgs) ? msgs : [] });
   } catch (e) {
     const status = e?.response?.status || 500;
     const payload = e?.response?.data || e.message;

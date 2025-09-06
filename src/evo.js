@@ -23,78 +23,86 @@ export async function listChats(instance) {
 }
 
 // ——— MESSAGES (compat) ———
-// Intenta varias firmas / endpoints hasta traer algo
+// ——— MESSAGES (compat ++): prueba varias firmas y endpoints
 export async function fetchMessagesCompat(instance, remoteJid, limit = 50) {
   const inst = encodeURIComponent(instance);
   const lim  = Number(limit) || 50;
 
   const attempts = [
-    // v2 (clásico en docs): where.key.remoteJid
+    // v2 docs: where.key.remoteJid + orderBy/desc + take
+    {
+      kind: 'chat/findMessages key.remoteJid + orderBy/take',
+      body: { where: { key: { remoteJid } }, orderBy: { messageTimestamp: 'desc' }, take: lim },
+      path: `/chat/findMessages/${inst}`
+    },
+    // igual pero sin orderBy (algunos no lo soportan)
     {
       kind: 'chat/findMessages key.remoteJid',
-      fn: () => evo.post(`/chat/findMessages/${inst}`, {
-        where: { key: { remoteJid } },
-        limit: lim
-      })
+      body: { where: { key: { remoteJid } }, limit: lim },
+      path: `/chat/findMessages/${inst}`
     },
-    // algunas builds: where.remoteJid (sin key)
+    // where.remoteJid directo
     {
       kind: 'chat/findMessages remoteJid',
-      fn: () => evo.post(`/chat/findMessages/${inst}`, {
-        where: { remoteJid },
-        limit: lim
-      })
+      body: { where: { remoteJid }, limit: lim },
+      path: `/chat/findMessages/${inst}`
     },
-    // otras: { jid }
+    // where.jid
     {
       kind: 'chat/findMessages jid',
-      fn: () => evo.post(`/chat/findMessages/${inst}`, {
-        where: { jid: remoteJid },
-        limit: lim
-      })
+      body: { where: { jid: remoteJid }, limit: lim },
+      path: `/chat/findMessages/${inst}`
     },
-    // endpoint alternativo: /chat/messages
+    // endpoint alterno: chat/messages {remoteJid}
     {
       kind: 'chat/messages {remoteJid}',
-      fn: () => evo.post(`/chat/messages/${inst}`, {
-        remoteJid,
-        limit: lim
-      })
+      body: { remoteJid, limit: lim },
+      path: `/chat/messages/${inst}`
     },
-    // algunos exponen /message/find
+    // a veces hay path param para el jid
+    {
+      kind: 'chat/messages/:jid',
+      pathParam: encodeURIComponent(remoteJid),
+      path: `/chat/messages/${inst}/:jid`
+    },
+    // message/find con key.remoteJid
     {
       kind: 'message/find key.remoteJid',
-      fn: () => evo.post(`/message/find/${inst}`, {
-        where: { key: { remoteJid } },
-        limit: lim
-      })
+      body: { where: { key: { remoteJid } }, limit: lim },
+      path: `/message/find/${inst}`
     },
-    // variante /message/find with remoteJid directo
+    // message/find con remoteJid directo
     {
       kind: 'message/find remoteJid',
-      fn: () => evo.post(`/message/find/${inst}`, {
-        where: { remoteJid },
-        limit: lim
-      })
+      body: { where: { remoteJid }, limit: lim },
+      path: `/message/find/${inst}`
     },
   ];
 
   for (const att of attempts) {
     try {
-      const { data } = await att.fn();
+      let url = att.path;
+      if (att.pathParam) url = url.replace('/:jid', `/${att.pathParam}`);
+      const { data } = att.body
+        ? await evo.post(url, att.body)
+        : await evo.post(url); // por si algún endpoint no lleva body
+
       const arr = Array.isArray(data) ? data : (data?.messages || data?.data || []);
       if (Array.isArray(arr) && arr.length) {
+        if (process.env.DEBUG_COMPAT === 'true') {
+          console.log('[fetchMessagesCompat] OK via', att.kind, 'count=', arr.length);
+        }
         return arr;
       }
-      // si viene array vacío, seguimos probando
-    } catch (e) {
-      // ignoramos 404/400 y seguimos probando siguientes firmas
       if (process.env.DEBUG_COMPAT === 'true') {
-        console.warn(`[fetchMessagesCompat] ${att.kind} fallo`, e?.response?.status || e.message);
+        console.log('[fetchMessagesCompat] vacío via', att.kind);
+      }
+    } catch (e) {
+      if (process.env.DEBUG_COMPAT === 'true') {
+        console.warn('[fetchMessagesCompat] fallo', att.kind, e?.response?.status || e.message);
       }
     }
   }
-  // si ninguna funcionó, devolvemos array vacío
   return [];
 }
 
