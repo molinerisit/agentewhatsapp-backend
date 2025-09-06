@@ -1,3 +1,4 @@
+// src/webhook.js
 import express from 'express';
 
 export default function makeWebhookRouter(io) {
@@ -7,12 +8,17 @@ export default function makeWebhookRouter(io) {
     try {
       const token = req.query.token;
       if (process.env.WEBHOOK_TOKEN && token !== process.env.WEBHOOK_TOKEN) {
+        console.warn('[WEBHOOK] invalid token');
         return res.status(401).json({ ok: false, error: 'Invalid webhook token' });
       }
+
       const instance = req.query.instance || req.body?.instance || req.headers['x-evolution-instance'] || 'unknown';
       const event = req.body?.event || req.query.event || req.headers['x-evolution-event'] || 'UNKNOWN_EVENT';
+      const bytes = JSON.stringify(req.body || {}).length;
 
-      // broadcast to all, and to room per instance
+      console.log(`[WEBHOOK] instance=${instance} event=${event} bytes=${bytes}`);
+
+      // broadcast global y por sala
       io.emit('evolution_event', { instance, event, payload: req.body });
       io.to(String(instance)).emit('evolution_event', { instance, event, payload: req.body });
 

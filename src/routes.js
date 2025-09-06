@@ -1,9 +1,10 @@
+// src/routes.js
 import express from 'express';
 import { listChats, fetchMessagesCompat, sendText } from './evo.js';
 
 const router = express.Router();
 
-// helpers de normalización (igual que tenías)
+/* ===================== Helpers de normalización ===================== */
 function extractJid(obj) {
   const candidates = [
     obj?.key?.remoteJid,
@@ -46,57 +47,78 @@ function normalizeChat(c) {
   return { jid, name: extractName(c), preview: extractPreview(c), _raw: c };
 }
 
+/* ===================== Rutas ===================== */
 router.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
+// GET /api/chats?instance=Orbytal
 router.get('/chats', async (req, res) => {
+  const t0 = Date.now();
   try {
     const { instance } = req.query;
+    console.log(`[HTTP] GET /api/chats instance=${instance}`);
     if (!instance) return res.status(400).json({ error: 'Missing "instance"' });
-    const chats = await listChats(instance);
-    const arr = Array.isArray(chats) ? chats : (chats?.chats || chats?.data || []);
-    const normalized = arr.map(normalizeChat).filter(c => !!c.jid);
+
+    const raw = await listChats(instance);
+    const arr = Array.isArray(raw) ? raw : (raw?.chats || raw?.data || []);
+    const normalized = (arr || []).map(normalizeChat).filter(c => !!c.jid);
+
+    console.log(`[HTTP] /api/chats -> input=${arr?.length ?? 0} normalized=${normalized.length} (${Date.now()-t0}ms)`);
     res.json({ chats: normalized });
   } catch (e) {
     const status = e?.response?.status || 500;
     const payload = e?.response?.data || e.message;
-    console.error('[chats ERROR]', status, payload);
+    console.error('[HTTP ERR /api/chats]', status, payload);
     res.status(500).json({ error: payload, status });
   }
 });
 
+// GET /api/messages?instance=Orbytal&remoteJid=xxx@…&limit=50
 router.get('/messages', async (req, res) => {
+  const t0 = Date.now();
   try {
     const { instance, remoteJid, limit } = req.query;
+    console.log(`[HTTP] GET /api/messages instance=${instance} jid=${remoteJid} limit=${limit}`);
     if (!instance) return res.status(400).json({ error: 'Missing "instance"' });
     if (!remoteJid) return res.status(400).json({ error: 'Missing "remoteJid"' });
 
-    // Forzamos JID válido para evitar confusiones (ya vi que venían bien, pero ayuda)
     const jid = String(remoteJid);
-    if (!/@/.test(jid)) {
+    if (!/@(s\.whatsapp\.net|g\.us)$/.test(jid)) {
+      console.warn('[HTTP] /api/messages remoteJid no parece JID válido:', jid);
       return res.status(400).json({ error: 'remoteJid debe terminar en @s.whatsapp.net o @g.us' });
     }
 
-    const msgs = await fetchMessagesCompat(instance, jid, limit ? Number(limit) : 50);
-    return res.json({ messages: Array.isArray(msgs) ? msgs : [] });
+    const lim = limit ? Number(limit) : 50;
+    const msgs = await fetchMessagesCompat(instance, jid, lim);
+    console.log(`[HTTP] /api/messages -> ${Array.isArray(msgs) ? msgs.length : 'non-array'} (${Date.now()-t0}ms)`);
+    res.json({ messages: Array.isArray(msgs) ? msgs : [] });
   } catch (e) {
     const status = e?.response?.status || 500;
     const payload = e?.response?.data || e.message;
-    console.error('[messages ERROR]', status, payload);
+    console.error('[HTTP ERR /api/messages]', status, payload);
     res.status(500).json({ error: payload, status });
   }
 });
 
+// POST /api/send   { instance, number, text, quoted? }
 router.post('/send', async (req, res) => {
+  const t0 = Date.now();
   try {
     const { instance, number, text, quoted } = req.body || {};
-    if (!instance || !number || !text) return res.status(400).json({ error: 'instance, number, text are required' });
-    if (!/@/.test(String(number))) return res.status(400).json({ error: 'number debe ser un JID (…@s.whatsapp.net / …@g.us)' });
+    console.log(`[HTTP] POST /api/send instance=${instance} to=${number} len=${text?.length ?? 0}`);
+    if (!instance || !number || !text) {
+      console.warn('[HTTP] /api/send missing params', { instance, number, text: !!text });
+      return res.status(400).json({ error: 'instance, number, text are required' });
+    }
+    if (!/@(s\.whatsapp\.net|g\.us)$/.test(String(number))) {
+      return res.status(400).json({ error: 'number debe ser un JID (…@s.whatsapp.net / …@g.us)' });
+    }
     const out = await sendText(instance, number, text, quoted);
+    console.log(`[HTTP] /api/send -> ok (${Date.now()-t0}ms)`);
     res.json(out);
   } catch (e) {
     const status = e?.response?.status || 500;
     const payload = e?.response?.data || e.message;
-    console.error('[send ERROR]', status, payload);
+    console.error('[HTTP ERR /api/send]', status, payload);
     res.status(500).json({ error: payload, status });
   }
 });
