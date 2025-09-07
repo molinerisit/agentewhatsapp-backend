@@ -14,35 +14,49 @@ export default function makeWebhookRouter(io) {
     .trim() || 'unknown';
 
   // extractor robusto de mensajes (soporta múltiples layouts)
-  function extractMessages(payload) {
-    try {
-      // 1) arreglo directo
-      if (Array.isArray(payload)) return payload;
+ // extractor robusto de mensajes (soporta múltiples layouts) — versión que preserva `key`
+function extractMessages(payload) {
+  try {
+    // 1) arreglo directo
+    if (Array.isArray(payload)) return payload;
 
-      // 2) { messages: [...] }
-      if (Array.isArray(payload?.messages)) return payload.messages;
+    // 2) { messages: [...] }
+    if (Array.isArray(payload?.messages)) return payload.messages;
 
-      // 3) { data: { messages: [...] } }
-      if (Array.isArray(payload?.data?.messages)) return payload.data.messages;
+    // 3) { data: { messages: [...] } }
+    if (Array.isArray(payload?.data?.messages)) return payload.data.messages;
 
-      // 4) { data: [...] }
-      if (Array.isArray(payload?.data)) return payload.data;
+    // 4) { data: [...] }
+    if (Array.isArray(payload?.data)) return payload.data;
 
-      // 5) { data: { message: {...} } }
-      if (payload?.data?.message) return [payload.data.message];
-
-      // 6) { message: {...} } (muy común en messages.upsert / send.message)
-      if (payload?.message) return [payload.message];
-
-      // 7) algunos proveedores meten { result: [...] } o { rows: [...] }
-      if (Array.isArray(payload?.result)) return payload.result;
-      if (Array.isArray(payload?.rows))   return payload.rows;
-
-      return [];
-    } catch {
-      return [];
+    // 5) { data: { message: {...}, key? } }
+    if (payload?.data?.message) {
+      // si viene data.message con data.key, preservamos el objeto completo
+      if (payload?.data?.key || payload?.data?.remoteJid || payload?.data?.chatId) {
+        return [payload.data];
+      }
+      // sino, al menos devolvemos wrapper con `message`
+      return [{ message: payload.data.message }];
     }
+
+    // 6) { message: {...}, key? }  (muy común en messages.upsert / send.message)
+    if (payload?.message) {
+      if (payload?.key || payload?.remoteJid || payload?.chatId) {
+        return [payload]; // ← preserva key/ids/metadata
+      }
+      return [{ message: payload.message }];
+    }
+
+    // 7) otros contenedores
+    if (Array.isArray(payload?.result)) return payload.result;
+    if (Array.isArray(payload?.rows))   return payload.rows;
+
+    return [];
+  } catch {
+    return [];
   }
+}
+
 
   // ---------- guard opcional por token ----------
   router.use((req, res, next) => {
