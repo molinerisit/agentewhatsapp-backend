@@ -1,4 +1,3 @@
-// src/server.js
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -12,20 +11,15 @@ import makeWebhookRouter from './webhook.js';
 
 const app = express();
 const server = http.createServer(app);
-const io = new SocketIOServer(server, {
-  cors: { origin: true, methods: ['GET', 'POST'] }
-});
+const io = new SocketIOServer(server, { cors: { origin: true, methods: ['GET','POST'] } });
 
-// —— Logs de arranque útiles ——
-(function bootLog() {
-  const mask = (s = '') => String(s).slice(0, 4) + '***';
-  console.log('[BOOT] PORT=', process.env.PORT || 8080);
-  console.log('[BOOT] EVOLUTION_API_URL=', process.env.EVOLUTION_API_URL || '(missing)');
-  console.log('[BOOT] EVOLUTION_API_KEY=', process.env.EVOLUTION_API_KEY ? mask(process.env.EVOLUTION_API_KEY) : '(missing)');
-  console.log('[BOOT] WEBHOOK_TOKEN=', process.env.WEBHOOK_TOKEN ? mask(process.env.WEBHOOK_TOKEN) : '(none)');
-})();
+// Logs de arranque
+const mask = (s='') => String(s).slice(0,4) + '***';
+console.log('[BOOT] PORT=', process.env.PORT || 8080);
+console.log('[BOOT] EVOLUTION_API_URL=', process.env.EVOLUTION_API_URL || '(missing)');
+console.log('[BOOT] EVOLUTION_API_KEY=', process.env.EVOLUTION_API_KEY ? mask(process.env.EVOLUTION_API_KEY) : '(missing)');
 
-// —— Middlewares base ——
+// Middlewares
 app.set('trust proxy', 1);
 app.use((req, res, next) => {
   const origin = req.headers.origin || '*';
@@ -42,73 +36,73 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
-// —— Healthcheck ——
-app.get('/api/health', (req, res) => {
-  res.json({
-    ok: true,
-    uptime: process.uptime(),
-    now: new Date().toISOString(),
-  });
-});
+// Health
+app.get('/api/health', (_req, res) => res.json({ ok:true, now:new Date().toISOString(), uptime:process.uptime() }));
 
-// —— Static UI (carpeta public) ——
+// Static UI
 app.use('/', express.static(path.resolve('public')));
 
-// —— Webhook (debe ser SIEMPRE un Router válido) ——
-const webhookRouter = makeWebhookRouter?.(io);
-if (!webhookRouter) {
-  console.error('[BOOT] webhookRouter no construido — revisá export default de ./webhook.js');
-} else {
-  app.use('/api', webhookRouter);
+// 🔒 Montaje del webhook con guardas fuertes
+let webhookMounted = false;
+try {
+  if (typeof makeWebhookRouter === 'function') {
+    const webhookRouter = makeWebhookRouter(io);
+    if (webhookRouter && typeof webhookRouter === 'function') {
+      app.use('/api', webhookRouter);
+      webhookMounted = true;
+      console.log('[BOOT] Webhook router montado en /api/webhook');
+    } else {
+      console.error('[BOOT] makeWebhookRouter() NO devolvió un Router válido');
+    }
+  } else {
+    console.error('[BOOT] makeWebhookRouter NO es una función. Revisa export default en ./webhook.js');
+  }
+} catch (err) {
+  console.error('[BOOT] Error montando webhook router:', err);
 }
 
-// —— Rutas REST (/api/chats, /api/messages, /api/send, etc.) ——
+// REST API
+if (!routes || typeof routes !== 'function') {
+  throw new Error('routes.js no exporta default un express.Router()');
+}
 app.use('/api', routes);
 
-// —— 404 para APIs (después de montar routers) ——
+// 404 para APIs
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not Found' }));
 
-// —— Manejo de errores global ——
+// Error handler
 app.use((err, _req, res, _next) => {
   console.error('[HTTP ERROR]', err?.stack || err);
   res.status(500).json({ error: err?.message || 'Internal Server Error' });
 });
 
-// —— Socket.IO ——
+// Socket.IO
 io.on('connection', (socket) => {
   console.log('[SOCKET] connected id=', socket.id);
 
-  // Unirse a sala por instancia o a una “sala compuesta” inst:jid (front usa ambos)
   socket.on('join', ({ instance }) => {
-    if (!instance) return;
-    const room = String(instance);
-    socket.join(room);
-    console.log('[SOCKET]', socket.id, 'joined room=', room);
+    if (instance) {
+      socket.join(String(instance));
+      console.log('[SOCKET]', socket.id, 'joined room=', String(instance));
+    }
   });
 
-  // Compat: suscripción explícita a sala de chat
   socket.on('joinChat', ({ room }) => {
-    if (!room) return;
-    socket.join(String(room));
-    console.log('[SOCKET]', socket.id, 'joined room=', room);
+    if (room) {
+      socket.join(String(room));
+      console.log('[SOCKET]', socket.id, 'joined room=', String(room));
+    }
   });
 
-  // Limpieza opcional
   socket.on('disconnect', (reason) => {
     console.log('[SOCKET] disconnected id=', socket.id, 'reason=', reason);
   });
 });
 
-// —— Hardening de procesos ——
-process.on('unhandledRejection', (e) => {
-  console.error('[UNHANDLED REJECTION]', e);
-});
-process.on('uncaughtException', (e) => {
-  console.error('[UNCAUGHT EXCEPTION]', e);
-});
+process.on('unhandledRejection', (e) => console.error('[UNHANDLED REJECTION]', e));
+process.on('uncaughtException', (e) => console.error('[UNCAUGHT EXCEPTION]', e));
 
-// —— Start ——
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-  console.log(`[Minimal] Listening on port ${PORT}`);
+  console.log(`[Minimal] Listening on port ${PORT} — webhook=${webhookMounted ? 'ON':'OFF'}`);
 });

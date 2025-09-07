@@ -1,15 +1,22 @@
 import express from 'express';
 import { listChats, fetchMessagesCompat, sendText } from './evo.js';
-import { getStore } from './webhook.js'; // ⬅⬅ IMPORT CORRECTO
 
 const router = express.Router();
 
+// Helpers
 function extractJid(obj) {
-  const candidates = [
-    obj?.key?.remoteJid, obj?.remoteJid, obj?.jid, obj?.chatId, obj?.id,
-    obj?.lastMessage?.key?.remoteJid, obj?.lastMessage?.remoteJid, obj?.message?.key?.remoteJid,
+  const cands = [
+    obj?.key?.remoteJid,
+    obj?.remoteJid,
+    obj?.jid,
+    obj?.chatId,
+    obj?.id,
+    obj?.lastMessage?.key?.remoteJid,
+    obj?.lastMessage?.remoteJid,
+    obj?.message?.key?.remoteJid,
   ].filter(Boolean);
-  for (const x of candidates) {
+
+  for (const x of cands) {
     const s = String(x);
     if (/@/.test(s)) return s;
   }
@@ -29,7 +36,7 @@ function extractPreview(obj) {
     m.videoMessage?.caption ||
     m.buttonsResponseMessage?.selectedDisplayText ||
     m.listResponseMessage?.title ||
-    m?.text?.body || '' // extra
+    ''
   ) || '';
 }
 function normalizeChat(c) {
@@ -37,8 +44,10 @@ function normalizeChat(c) {
   return { jid, name: extractName(c), preview: extractPreview(c), _raw: c };
 }
 
+// Health simple
 router.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
+// Chats
 router.get('/chats', async (req, res) => {
   try {
     const { instance } = req.query;
@@ -46,6 +55,7 @@ router.get('/chats', async (req, res) => {
     const chats = await listChats(instance);
     const arr = Array.isArray(chats) ? chats : (chats?.chats || chats?.data || []);
     const normalized = arr.map(normalizeChat).filter(c => !!c.jid);
+    console.log('[HTTP] /api/chats -> input=%d normalized=%d', arr.length, normalized.length);
     res.json({ chats: normalized });
   } catch (e) {
     const status = e?.response?.status || 500;
@@ -55,6 +65,7 @@ router.get('/chats', async (req, res) => {
   }
 });
 
+// Mensajes (pull — puede venir vacío en tu build)
 router.get('/messages', async (req, res) => {
   try {
     const { instance, remoteJid, limit } = req.query;
@@ -62,18 +73,13 @@ router.get('/messages', async (req, res) => {
     if (!remoteJid) return res.status(400).json({ error: 'Missing "remoteJid"' });
 
     const jid = String(remoteJid);
-    let out = await fetchMessagesCompat(instance, jid, limit ? Number(limit) : 50);
-
-    // Fallback a memoria del webhook
-    if (!Array.isArray(out) || out.length === 0) {
-      const mem = getStore()?.[instance]?.[jid] || [];
-      out = mem.slice(-50);
-      console.log(`[HTTP] /api/messages (fallback) -> ${out.length}`);
-    } else {
-      console.log(`[HTTP] /api/messages (REST) -> ${out.length}`);
+    if (!/@/.test(jid)) {
+      return res.status(400).json({ error: 'remoteJid debe terminar en @s.whatsapp.net o @g.us' });
     }
 
-    res.json({ messages: out });
+    const msgs = await fetchMessagesCompat(instance, jid, limit ? Number(limit) : 50);
+    console.log('[HTTP] /api/messages -> %d', Array.isArray(msgs) ? msgs.length : 0);
+    res.json({ messages: Array.isArray(msgs) ? msgs : [] });
   } catch (e) {
     const status = e?.response?.status || 500;
     const payload = e?.response?.data || e.message;
@@ -82,11 +88,17 @@ router.get('/messages', async (req, res) => {
   }
 });
 
+// Enviar texto
 router.post('/send', async (req, res) => {
   try {
     const { instance, number, text, quoted } = req.body || {};
-    if (!instance || !number || !text) return res.status(400).json({ error: 'instance, number, text are required' });
-    if (!/@/.test(String(number))) return res.status(400).json({ error: 'number debe ser un JID (…@s.whatsapp.net / …@g.us)' });
+    if (!instance || !number || !text) {
+      return res.status(400).json({ error: 'instance, number, text are required' });
+    }
+    if (!/@/.test(String(number))) {
+      return res.status(400).json({ error: 'number debe ser un JID (…@s.whatsapp.net / …@g.us)' });
+    }
+    console.log('[HTTP] POST /api/send instance=%s to=%s len=%d', instance, number, text.length);
     const out = await sendText(instance, number, text, quoted);
     res.json(out);
   } catch (e) {
