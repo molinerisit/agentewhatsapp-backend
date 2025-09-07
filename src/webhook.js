@@ -1,9 +1,6 @@
 import express from 'express';
 
-/**
- * Memoria en caliente (process only) para mensajes recibidos por webhook.
- * Estructura: store[instance][jid] = Array<Message>
- */
+/** Memoria en caliente (solo proceso) */
 const store = {};
 export function getStore() { return store; }
 
@@ -17,18 +14,11 @@ function pushMessages(instance, msgs = []) {
   if (!instance || !Array.isArray(msgs)) return 0;
   let added = 0;
   for (const m of msgs) {
-    const jid =
-      m?.key?.remoteJid ||
-      m?.remoteJid ||
-      m?.chatId ||
-      m?.jid ||
-      null;
+    const jid = m?.key?.remoteJid || m?.remoteJid || m?.chatId || m?.jid || null;
     if (!jid) continue;
-
     const bucket = ensureStore(instance, jid);
     const id = m?.key?.id;
-    // evitar duplicados por id
-    if (id && bucket.some(x => x?.key?.id === id)) continue;
+    if (id && bucket.some(x => x?.key?.id === id)) continue; // dedupe
     bucket.push(m);
     added++;
   }
@@ -36,72 +26,59 @@ function pushMessages(instance, msgs = []) {
 }
 
 function extractMessagesFromPayload(payload) {
-  // formatos comunes que he visto en Evolution (varían por versión/plan)
-  // 1) { messages: [ ... ] }
   if (Array.isArray(payload?.messages)) return payload.messages;
-
-  // 2) { data: { messages: [ ... ] } }
   if (Array.isArray(payload?.data?.messages)) return payload.data.messages;
-
-  // 3) { data: [ ... ] }
   if (Array.isArray(payload?.data)) return payload.data;
-
-  // 4) { message: { ...uno... } }
   if (payload?.message) return [payload.message];
-
-  // 5) { data: { message: { ... } } }
   if (payload?.data?.message) return [payload.data.message];
-
-  // 6) algunos envían { entry: [{ changes: [{ value: { messages: [...] } }] }] } (estilo WhatsApp Cloud)
+  // formato estilo Cloud:
   const cloud = payload?.entry?.[0]?.changes?.[0]?.value?.messages;
   if (Array.isArray(cloud)) return cloud;
-
   return [];
 }
 
 export default function makeWebhookRouter(io) {
   const router = express.Router();
 
-  // Acepta /webhook y /webhook/:event (Webhook by Events)
   router.post(['/webhook', '/webhook/:event'], async (req, res) => {
     try {
-      const urlEvent  = (req.params?.event || '').trim(); // p.ej. "messages.upsert"
-      const headerEvt = req.headers['x-evolution-event'];
-      const queryEvt  = req.query.event;
-      const eventName = String(urlEvent || headerEvt || queryEvt || '').toLowerCase() || 'unknown';
+      // detectar evento desde: path, header, query **y body**
+      const urlEvent   = (req.params?.event || '').trim();
+      const headerEvt  = req.headers['x-evolution-event'];
+      const queryEvt   = req.query.event;
+      const bodyEvt    = req.body?.event;
+      const eventName  = String(urlEvent || headerEvt || queryEvt || bodyEvt || '').toLowerCase() || 'unknown';
 
-      // Token opcional
+      // token (opcional)
       const token = req.query.token;
       if (process.env.WEBHOOK_TOKEN && token !== process.env.WEBHOOK_TOKEN) {
         console.warn('[WEBHOOK] invalid token');
         return res.status(401).json({ ok: false });
       }
 
-      // Instance desde query, headers o body
       const instance =
         req.query.instance ||
         req.headers['x-evolution-instance'] ||
         req.body?.instance ||
         'unknown';
 
-      // Log crudo
       console.log('[WEBHOOK] event=', eventName, 'instance=', instance);
 
-      // Emitir el crudo para debug del front
+      // emitir crudo para debug en front
       io.emit('evolution_event', { event: eventName, instance, payload: req.body });
       io.to(String(instance)).emit('evolution_event', { event: eventName, instance, payload: req.body });
 
-      // Extraer mensajes (si aplica)
+      // intentar extraer mensajes
       const msgs = extractMessagesFromPayload(req.body);
       if (msgs.length) {
         const added = pushMessages(String(instance), msgs);
-        console.log(`[WEBHOOK] incoming messages count= ${msgs.length} (added to cache: ${added})`);
+        console.log(`[WEBHOOK] incoming messages count=${msgs.length} (added=${added})`);
 
-        // Emitir normalizados por instancia
+        // por instancia
         io.emit('message_upsert', { instance, messages: msgs });
         io.to(String(instance)).emit('message_upsert', { instance, messages: msgs });
 
-        // Emitir por sala de chat, p/que el front de ese chat los tome directo
+        // por chat
         const byJid = {};
         for (const m of msgs) {
           const jid = m?.key?.remoteJid || m?.remoteJid || m?.chatId || m?.jid;
@@ -113,11 +90,9 @@ export default function makeWebhookRouter(io) {
         }
       }
 
-      // 200 SIEMPRE para no cortar reintentos de Evolution
-      return res.status(200).json({ ok: true });
+      return res.status(200).json({ ok: true }); // siempre 200
     } catch (e) {
       console.error('[WEBHOOK ERROR]', e?.message || e);
-      // 200 igual (no forzar reintentos infinitos)
       return res.status(200).json({ ok: true });
     }
   });
