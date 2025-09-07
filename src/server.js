@@ -1,36 +1,14 @@
+// src/server.js
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
-import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import makeRoutes from './routes.js';
+import cors from 'cors';
+import path from 'node:path';
+import routes from './routes.js';
 import makeWebhookRouter from './webhook.js';
-
-// ===== Memoria compartida (instance -> jid -> mensajes)
-export const memoryStore = {
-  buckets: Object.create(null),
-  getBucket(inst, jid) {
-    if (!this.buckets[inst]) this.buckets[inst] = Object.create(null);
-    if (!this.buckets[inst][jid]) this.buckets[inst][jid] = [];
-    return this.buckets[inst][jid];
-  },
-  push(inst, jid, msgs = []) {
-    const b = this.getBucket(inst, jid);
-    for (const m of msgs) {
-      const id = m?.key?.id || m?.id;
-      if (id && b.some(x => (x?.key?.id || x?.id) === id)) continue;
-      b.push(m);
-    }
-    if (b.length > 200) this.buckets[inst][jid] = b.slice(-200);
-    return this.buckets[inst][jid];
-  },
-  list(inst, jid, limit = 50) {
-    const b = this.getBucket(inst, jid);
-    return b.slice(-Number(limit || 50));
-  }
-};
 
 const app = express();
 const server = http.createServer(app);
@@ -38,52 +16,98 @@ const io = new SocketIOServer(server, {
   cors: { origin: true, methods: ['GET', 'POST'] }
 });
 
-// CORS simple
+// —— Logs de arranque útiles ——
+(function bootLog() {
+  const mask = (s = '') => String(s).slice(0, 4) + '***';
+  console.log('[BOOT] PORT=', process.env.PORT || 8080);
+  console.log('[BOOT] EVOLUTION_API_URL=', process.env.EVOLUTION_API_URL || '(missing)');
+  console.log('[BOOT] EVOLUTION_API_KEY=', process.env.EVOLUTION_API_KEY ? mask(process.env.EVOLUTION_API_KEY) : '(missing)');
+  console.log('[BOOT] WEBHOOK_TOKEN=', process.env.WEBHOOK_TOKEN ? mask(process.env.WEBHOOK_TOKEN) : '(none)');
+})();
+
+// —— Middlewares base ——
+app.set('trust proxy', 1);
 app.use((req, res, next) => {
   const origin = req.headers.origin || '*';
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,x-evolution-instance,x-evolution-event');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-evolution-event, x-evolution-instance');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 app.use(cors({ origin: (_o, cb) => cb(null, true) }));
 app.use(helmet());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
-// Static UI
-app.use('/', express.static('public'));
-
-// Pasamos memoryStore a routers
-app.locals.memoryStore = memoryStore;
-
-// Webhook y REST
-app.use('/api', makeWebhookRouter(io, memoryStore));
-app.use('/api', makeRoutes(memoryStore));
-
-// Sockets
-io.on('connection', socket => {
-  console.log('[SOCKET] client connected id=' + socket.id);
-
-  socket.on('join', ({ instance, jid }) => {
-    if (instance) {
-      socket.join(String(instance));
-      console.log(`[SOCKET] ${socket.id} joined room=${instance}`);
-    }
-    if (instance && jid) {
-      const room = `${instance}:${jid}`;
-      socket.join(room);
-      console.log(`[SOCKET] ${socket.id} joined room=${room}`);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('[SOCKET] client disconnected id=' + socket.id);
+// —— Healthcheck ——
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    uptime: process.uptime(),
+    now: new Date().toISOString(),
   });
 });
 
+// —— Static UI (carpeta public) ——
+app.use('/', express.static(path.resolve('public')));
+
+// —— Webhook (debe ser SIEMPRE un Router válido) ——
+const webhookRouter = makeWebhookRouter?.(io);
+if (!webhookRouter) {
+  console.error('[BOOT] webhookRouter no construido — revisá export default de ./webhook.js');
+} else {
+  app.use('/api', webhookRouter);
+}
+
+// —— Rutas REST (/api/chats, /api/messages, /api/send, etc.) ——
+app.use('/api', routes);
+
+// —— 404 para APIs (después de montar routers) ——
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not Found' }));
+
+// —— Manejo de errores global ——
+app.use((err, _req, res, _next) => {
+  console.error('[HTTP ERROR]', err?.stack || err);
+  res.status(500).json({ error: err?.message || 'Internal Server Error' });
+});
+
+// —— Socket.IO ——
+io.on('connection', (socket) => {
+  console.log('[SOCKET] connected id=', socket.id);
+
+  // Unirse a sala por instancia o a una “sala compuesta” inst:jid (front usa ambos)
+  socket.on('join', ({ instance }) => {
+    if (!instance) return;
+    const room = String(instance);
+    socket.join(room);
+    console.log('[SOCKET]', socket.id, 'joined room=', room);
+  });
+
+  // Compat: suscripción explícita a sala de chat
+  socket.on('joinChat', ({ room }) => {
+    if (!room) return;
+    socket.join(String(room));
+    console.log('[SOCKET]', socket.id, 'joined room=', room);
+  });
+
+  // Limpieza opcional
+  socket.on('disconnect', (reason) => {
+    console.log('[SOCKET] disconnected id=', socket.id, 'reason=', reason);
+  });
+});
+
+// —— Hardening de procesos ——
+process.on('unhandledRejection', (e) => {
+  console.error('[UNHANDLED REJECTION]', e);
+});
+process.on('uncaughtException', (e) => {
+  console.error('[UNCAUGHT EXCEPTION]', e);
+});
+
+// —— Start ——
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`[Minimal] Listening on port ${PORT}`);
