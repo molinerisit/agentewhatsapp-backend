@@ -1,29 +1,28 @@
 // src/bot/rag.js
 import { pool } from './config.js';
-import pdf from 'pdf-parse';
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.js';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const EMB_MODEL = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
 
-// Dimensión por modelo (usa la que corresponda)
+// Dimensión por modelo
 const EMB_DIM_BY_MODEL = {
   'text-embedding-3-small': 1536,
   'text-embedding-3-large': 3072
 };
 const EMB_DIM = EMB_DIM_BY_MODEL[EMB_MODEL] || 1536;
 
-// -------- Helpers --------
+/* ------------------------- Helpers ------------------------- */
 
-// Convierte un array de floats JS a literal SQL de pgvector: "[0.1,0.2,...]"
+// Convierte array JS -> literal SQL pgvector: "[0.1,0.2,...]"
 function toSqlVector(arr) {
-  // stringify rápido; si te preocupa tamaño, hacé toFixed(6)
   return `[${arr.map(v => (Number.isFinite(v) ? v : 0)).join(',')}]`;
 }
 
-// Segmenta texto por “aprox tokens” con solapado
+// Segmenta texto aprox por tokens con solapado real
 function chunkText(text, maxTokens = 700, overlap = 100) {
-  const size = maxTokens * 4; // heurística char/token
+  const size = maxTokens * 4; // aprox chars/token
   const olap = overlap   * 4;
   const out = [];
   let i = 0;
@@ -36,7 +35,7 @@ function chunkText(text, maxTokens = 700, overlap = 100) {
   return out.map(t => t.trim()).filter(Boolean);
 }
 
-// Embeddings en lotes (para evitar límites)
+// Embeddings por lotes para evitar rate limits
 async function embedBatch(texts, batchSize = 64) {
   const all = [];
   for (let i = 0; i < texts.length; i += batchSize) {
@@ -47,7 +46,21 @@ async function embedBatch(texts, batchSize = 64) {
   return all;
 }
 
-// ---------- Bootstrap DB (extensión + tablas + índices) ----------
+// Extrae texto de PDF desde un Buffer usando pdfjs-dist
+async function extractPdfText(buffer) {
+  const loadingTask = pdfjs.getDocument({ data: buffer });
+  const pdf = await loadingTask.promise;
+  let full = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    full += content.items.map(it => it.str).join(' ') + '\n';
+  }
+  return full.trim();
+}
+
+/* --------------------- Bootstrap DB ----------------------- */
+
 await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
 await pool.query(`
   CREATE TABLE IF NOT EXISTS rag_sources (
@@ -72,7 +85,7 @@ await pool.query(`
 await pool.query(`CREATE INDEX IF NOT EXISTS rag_chunks_instance_idx ON rag_chunks(instance_id)`);
 await pool.query(`CREATE INDEX IF NOT EXISTS rag_chunks_source_idx   ON rag_chunks(source_id)`);
 
-// Índice ANN (ivfflat) para cosine; se crea si no existe
+// Índice ANN ivfflat para cosine (se crea una vez)
 await pool.query(`
   DO $$
   BEGIN
@@ -85,11 +98,11 @@ await pool.query(`
   END$$;
 `);
 
-// ---------- API ----------
+/* ------------------------ API ----------------------------- */
 
+// Ingesta de PDF: parte en chunks, embebe y guarda
 export async function ingestPdf(instanceId, fileBuffer, fileName = 'rules.pdf') {
-  const data = await pdf(fileBuffer);
-  const text = (data.text || '').replace(/\s+\n/g, '\n').trim();
+  const text = (await extractPdfText(fileBuffer)).replace(/\s+\n/g, '\n').trim();
   if (!text) throw new Error('PDF sin texto extraíble');
 
   const { rows: srcRows } = await pool.query(
@@ -126,12 +139,11 @@ export async function ingestPdf(instanceId, fileBuffer, fileName = 'rules.pdf') 
   return { sourceId, chunks: chunks.length };
 }
 
+// Búsqueda semántica: devuelve top-k con score (cosine similarity)
 export async function ragSearch(instanceId, query, k = 5) {
-  // Embedding de la consulta
   const { data } = await openai.embeddings.create({ model: EMB_MODEL, input: query });
   const qvec = toSqlVector(data[0].embedding);
 
-  // Cosine distance: operador <=>  (score mayor = más similar)
   const { rows } = await pool.query(
     `
     SELECT id, text, 1 - (embedding <=> $1::vector) AS score
@@ -146,11 +158,10 @@ export async function ragSearch(instanceId, query, k = 5) {
   return rows;
 }
 
-// (Opcional) Parser simple por si necesitás en otra parte
+// Parser de PDF expuesto (opcional)
 export async function parsePdfBuffer(buffer) {
   try {
-    const data = await pdf(buffer);
-    return data.text || '';
+    return await extractPdfText(buffer);
   } catch (err) {
     console.error('[RAG][PDF] Error parseando:', err.message);
     return '';
