@@ -9,6 +9,7 @@ import cors from 'cors';
 import path from 'node:path';
 import routes from './routes.js';
 import makeWebhookRouter from './webhook.js';
+import botRoutes from './routes-bot.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -67,6 +68,8 @@ if (!routes || typeof routes !== 'function') {
   throw new Error('routes.js no exporta default un express.Router()');
 }
 app.use('/api', routes);
+
+app.use('/api', botRoutes);
 
 // 404 para APIs
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not Found' }));

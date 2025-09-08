@@ -1,6 +1,7 @@
 // backend/src/webhook.js
 // ESM: export default una fábrica que devuelve un Router válido
 import express from 'express';
+import { handleIncomingMessage } from './bot/engine.js';
 
 export default function makeWebhookRouter(io) {
   const router = express.Router();
@@ -57,7 +58,6 @@ function extractMessages(payload) {
   }
 }
 
-
   // ---------- guard opcional por token ----------
   router.use((req, res, next) => {
     const expected = process.env.WEBHOOK_TOKEN || 'evolution';
@@ -95,17 +95,23 @@ function extractMessages(payload) {
 
       // si hay mensajes, emitimos canales específicos
       const msgs = extractMessages(payload);
-      if (Array.isArray(msgs) && msgs.length) {
-        io.emit('message_upsert', { instance, messages: msgs });
-        io.to(String(instance)).emit('message_upsert', { instance, messages: msgs });
+     if (Array.isArray(msgs) && msgs.length) {
+  io.emit('message_upsert', { instance, messages: msgs });
+  io.to(String(instance)).emit('message_upsert', { instance, messages: msgs });
 
-        for (const m of msgs) {
-          const jid = m?.key?.remoteJid || m?.remoteJid || m?.chatId;
-          if (jid) {
-            io.to(`${instance}:${jid}`).emit('message_upsert_chat', { instance, jid, messages: [m] });
-          }
-        }
-      }
+  for (const m of msgs) {
+    const jid = m?.key?.remoteJid || m?.remoteJid || m?.chatId;
+    if (jid) {
+      io.to(`${instance}:${jid}`).emit('message_upsert_chat', { instance, jid, messages: [m] });
+    }
+    // <- RESPUESTA DEL BOT (solo entrantes)
+    if (!m?.key?.fromMe) {
+      handleIncomingMessage({ instance, message: m }).catch(err =>
+        console.error('[BOT ERROR]', err?.message || err)
+      );
+    }
+  }
+}
 
       // devolvemos 200 siempre para que Evolution no reintente eternamente
       return res.status(200).json({ ok: true });
