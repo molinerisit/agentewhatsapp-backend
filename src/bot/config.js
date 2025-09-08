@@ -2,51 +2,47 @@
 import pg from 'pg';
 const { Pool } = pg;
 
-export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+function getDbUrl() {
+  // Toma primero PUBLIC, luego la normal
+  let url = (process.env.DATABASE_PUBLIC_URL || process.env.DATABASE_URL || '').trim();
 
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS bot_instances (
-    instance_id      text PRIMARY KEY,
-    mode             text NOT NULL CHECK (mode IN ('reservas','ventas')),
-    external_db_url  text,
-    rag_enabled      boolean DEFAULT true,
-    write_enabled    boolean DEFAULT false,         -- NUEVO: habilita escrituras
-    confirm_required boolean DEFAULT true,          -- NUEVO: requiere confirmación
-    updated_at       timestamptz DEFAULT now()
-  )
-`);
+  // Log de diagnóstico (enmascarado)
+  const masked = url
+    ? url.replace(/\/\/([^:]+):([^@]+)@/, (_m, u) => `//${u}:***@`)
+    : '(vacía)';
+  console.log('[DB] DATABASE_URL=', masked);
 
-export async function getBotConfig(instanceId) {
-  const { rows } = await pool.query(
-    `SELECT instance_id, mode, external_db_url, rag_enabled, write_enabled, confirm_required, updated_at
-     FROM bot_instances WHERE instance_id=$1`, [instanceId]
-  );
-  if (rows.length) return rows[0];
-  return {
-    instance_id: instanceId,
-    mode: 'ventas',
-    external_db_url: null,
-    rag_enabled: true,
-    write_enabled: false,
-    confirm_required: true
-  };
+  if (!url) {
+    throw new Error(
+      'DATABASE_URL no configurado. Definí DATABASE_URL=postgresql://USER:PASS@HOST:PORT/DB?sslmode=require'
+    );
+  }
+
+  // Debe empezar con postgres:// o postgresql://
+  if (!/^postgres(ql)?:\/\//i.test(url)) {
+    throw new Error(`DATABASE_URL inválido (falta protocolo postgres:// o postgresql://): ${masked}`);
+  }
+
+  // Asegurar ssl
+  if (!/[?&]sslmode=/i.test(url) && !/[?&]ssl=/.test(url)) {
+    url += (url.includes('?') ? '&' : '?') + 'sslmode=require';
+  }
+  return url;
 }
 
-export async function upsertBotConfig({ instanceId, mode, externalDbUrl, ragEnabled, writeEnabled, confirmRequired }) {
-  const { rows } = await pool.query(`
-    INSERT INTO bot_instances (instance_id, mode, external_db_url, rag_enabled, write_enabled, confirm_required)
-    VALUES ($1,$2,$3,$4,$5,$6)
-    ON CONFLICT (instance_id)
-    DO UPDATE SET mode=EXCLUDED.mode,
-                  external_db_url=EXCLUDED.external_db_url,
-                  rag_enabled=EXCLUDED.rag_enabled,
-                  write_enabled=EXCLUDED.write_enabled,
-                  confirm_required=EXCLUDED.confirm_required,
-                  updated_at=now()
-    RETURNING instance_id, mode, external_db_url, rag_enabled, write_enabled, confirm_required, updated_at
-  `, [instanceId, mode, externalDbUrl, ragEnabled, writeEnabled, confirmRequired]);
-  return rows[0];
+const connectionString = getDbUrl();
+
+export const pool = new Pool({
+  connectionString,
+  // Railway usa certificados manejados, esto suele ser necesario:
+  ssl: { rejectUnauthorized: false },
+});
+
+// Ping en arranque (diagnóstico)
+try {
+  const r = await pool.query('select 1 as ok');
+  console.log('[DB] ping ok:', r.rows[0]);
+} catch (e) {
+  console.error('[DB] ping error:', e?.message || e);
+  throw e;
 }
