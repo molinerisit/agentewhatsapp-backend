@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
+    "postinstall": "rm -rf node_modules/pdf-parse/test",
     "dev": "NODE_ENV=development nodemon src/server.js"
   },
   "dependencies": {
